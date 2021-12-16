@@ -236,11 +236,14 @@ with Session() as session:
 
 # Copy the 'main' database from our application that contains
 # all the newly created tables to a file-based database
-engine_file = create_engine("sqlite:///nyc_backup.db3", module=pysqlite3)
-raw_connection_file = engine_file.raw_connection()
+# xref https://stackoverflow.com/a/67162137/40387
+engine_backup_file = create_engine("sqlite:///nyc_backup.db3", module=pysqlite3)
+raw_connection_backup_file = engine_backup_file.raw_connection()
 
-raw_connection_memory = session.bind.raw_connection()
+raw_connection_socrata_resource = session.bind.raw_connection()
 
 print("Backing up resource tables to disk")
-raw_connection_memory.backup(raw_connection_file.connection, name="main")
+raw_connection_socrata_resource.backup(
+    raw_connection_backup_file.connection, name="main"
+)
 print("done")
