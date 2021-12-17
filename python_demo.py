@@ -237,7 +237,7 @@ with Session() as session:
 # Copy the 'main' database from our application that contains
 # all the newly created tables to a file-based database
 # xref https://stackoverflow.com/a/67162137/40387
-engine_backup_file = create_engine("sqlite:///nyc_backup.db3", module=pysqlite3)
+engine_backup_file = create_engine("sqlite:////home/phrrngtn/nyc_backup.db3", module=pysqlite3)
 raw_connection_backup_file = engine_backup_file.raw_connection()
 
 raw_connection_socrata_resource = session.bind.raw_connection()
