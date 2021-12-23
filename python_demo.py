@@ -1,5 +1,6 @@
 import sqlalchemy
 from sqlalchemy import MetaData, Table, Column, sql, ForeignKey
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import (
     registry,
     relationship,
@@ -22,17 +23,18 @@ mapper_registry = registry()
 
 
 # add in tables for 'domain'. Start with string/JSON
+SocrataDomain = String(512)
 
 domain = Table(
     "domain",
     m,
-    Column("domain", String, primary_key=True),
+    Column("domain", SocrataDomain, primary_key=True),
     Column("_resources", JSON, nullable=False),
 )
 resource = Table(
     "resource",
     m,
-    Column("domain", String, ForeignKey(domain.c.domain)),
+    Column("domain", SocrataDomain, ForeignKey(domain.c.domain)),
     Column("resource_id", String(9), primary_key=True),
     Column("name", String),
     Column("permalink", String),
@@ -67,11 +69,15 @@ class Domain:
 class Resource:
     __table__ = resource
     __mapper_args__ = {  # type: ignore
-        "properties": {"columns": relationship("ResourceColumn")}
+        "properties": {
+            "columns": relationship(
+                "ResourceColumn", order_by="ResourceColumn.field_number"
+            )
+        }
     }
 
-    def as_sa_table(self, metadata):
-        t = Table(self.resource_id, metadata)
+    def as_sa_table(self, metadata, schema=None):
+        t = Table(self.resource_id, metadata, schema=schema)
         for c in self.columns:
             t.append_column(c.as_sa_column())
         return t
@@ -92,6 +98,14 @@ _type_map = {
     # "MultiLine": Geometry("MULTILINESTRING"),
     # "Point": Geometry("POINT"),
     "URL": Text,
+}
+
+# The Socrata domains have dots/periods in the name and that
+# is not database-friendly so we map the domains to something
+# that works as a schema. The object will get created in the default schema
+# if there is no mapping for the domain.
+_domain_to_schema_map = {
+    "data.cityofnewyork.us": "city_of_newyork_us",
 }
 
 
@@ -116,10 +130,13 @@ class ResourceColumn:
 
 # get rid of the password. See about using certificates instead.
 # e = create_engine("postgresql+psycopg2://tgrid:tgrid4all@localhost:5432/tgrid")
-e = create_engine("sqlite://", module=pysqlite3)
+# e = create_engine("sqlite://", module=pysqlite3)
+connection_string = "Driver={ODBC Driver 17 for SQL Server};Server=LAPTOP-M6BP34C4.local\TGRID4All;UID=tgrid4all;PWD=tgrid"
+connection_url = URL.create("mssql+pyodbc", query={"odbc_connect": connection_string})
+e = create_engine(connection_url)
 # This is a workaround to the problem with schema-scoped names as they are not directly
 # supported in SQLite.
-e.execute("ATTACH DATABASE ':memory:' AS socrata")
+# e.execute("ATTACH DATABASE ':memory:' AS socrata")
 e.echo = False
 
 
@@ -134,6 +151,7 @@ e.echo = False
 Session = sessionmaker(bind=e)
 
 if True:
+    e.echo = True
     m.drop_all(bind=e)
     m.create_all(bind=e)
     e.echo = False
@@ -216,11 +234,29 @@ with Session() as session:
     # q = session.query(Domain).options(joinedload(Domain.resources).joinedload(Resource.columns))
     new_m = MetaData()
     for dom in session.query(Domain):
-        print(dom.domain)
+        target_schema = _domain_to_schema_map.get(dom.domain, None)
+        print(dom.domain, target_schema)
         for r in dom.resources:
+            skip_table = False
             if len(r.columns) == 0:
+                print("resource %s has zero columns! %s" % (r.name, r.permalink))
                 continue
-            t = r.as_sa_table(new_m)
+            else:
+                # print("%d columns in resource %s" % (len(r.columns), r.name))
+                for c in r.columns:
+                    if len(c.field_name) >= 100:
+                        print(
+                            "Column %s in table %s too long (%d). Skipping table"
+                            % (c.field_name, r.name, len(c.field_name))
+                        )
+                        skip_table = True
+                        break
+                pass
+            # SQLite can deal with such long identifiers as appear in this metadata
+            # PostgreSQL accepts the identifiers but truncates them. This may cause duplicate column-names
+            # SQL Server 2019 has a maximum length of 128
+            if not skip_table:
+                t = r.as_sa_table(new_m, schema=target_schema)
             # print("adding table %s %s" % (t.name, t.columns))
 
     # Posgresql can run out of memory if we try and drop a whole bunch of tables
@@ -237,13 +273,15 @@ with Session() as session:
 # Copy the 'main' database from our application that contains
 # all the newly created tables to a file-based database
 # xref https://stackoverflow.com/a/67162137/40387
-engine_backup_file = create_engine("sqlite:////home/phrrngtn/nyc_backup.db3", module=pysqlite3)
-raw_connection_backup_file = engine_backup_file.raw_connection()
+# engine_backup_file = create_engine(
+#     "sqlite:////home/phrrngtn/nyc_backup.db3", module=pysqlite3
+# )
+# raw_connection_backup_file = engine_backup_file.raw_connection()
 
-raw_connection_socrata_resource = session.bind.raw_connection()
+# raw_connection_socrata_resource = session.bind.raw_connection()
 
-print("Backing up resource tables to disk")
-raw_connection_socrata_resource.backup(
-    raw_connection_backup_file.connection, name="main"
-)
-print("done")
+# print("Backing up resource tables to disk")
+# raw_connection_socrata_resource.backup(
+#     raw_connection_backup_file.connection, name="main"
+# )
+# print("done")
