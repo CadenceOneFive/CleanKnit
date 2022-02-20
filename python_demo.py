@@ -10,7 +10,9 @@ from sqlalchemy.orm import (
     query,
     joinedload,
 )
-from geoalchemy2 import Geometry
+
+import pdb
+from itertools import chain
 
 # See https://github.com/coleifer/pysqlite3
 import pysqlite3
@@ -130,14 +132,32 @@ class ResourceColumn:
 
 # get rid of the password. See about using certificates instead.
 # e = create_engine("postgresql+psycopg2://tgrid:tgrid4all@localhost:5432/tgrid")
-# e = create_engine("sqlite://", module=pysqlite3)
-connection_string = "Driver={ODBC Driver 17 for SQL Server};Server=LAPTOP-M6BP34C4.local\TGRID4All;UID=tgrid4all;PWD=tgrid"
-connection_url = URL.create("mssql+pyodbc", query={"odbc_connect": connection_string})
-e = create_engine(connection_url)
+e = create_engine("sqlite://", module=pysqlite3)
+# connection_string = "Driver={ODBC Driver 17 for SQL Server};Server=LAPTOP-M6BP34C4.local\TGRID4All;UID=tgrid4all;PWD=tgrid"
+# connection_url = URL.create("mssql+pyodbc", query={"odbc_connect": connection_string})
+# e = create_engine(connection_url)
 # This is a workaround to the problem with schema-scoped names as they are not directly
 # supported in SQLite.
-# e.execute("ATTACH DATABASE ':memory:' AS socrata")
+e.execute("ATTACH DATABASE ':memory:' AS socrata")
 e.echo = False
+
+
+def resource2dict(resources):
+    """
+    assumes appropriately named json files are in the current directory"""
+    d = {}
+    for r in resource_list["results"]:
+        print(r)
+        if r["count"] == 0:
+            continue
+        try:
+            payload = open(r["domain"] + ".json", "r").read()
+        except:
+            continue
+
+        d[r["domain"]] = dict(domain=r["domain"], _resources=payload)
+
+    return d
 
 
 # SQLite does not have schemas so map it to None.
@@ -170,118 +190,128 @@ if True:
     # results	an array of result objects
     # resultSetSize	the total number of results that could be returned were they not paged
     # curl "https://api.us.socrata.com/api/catalog/v1?domains=data.cityofnewyork.us&offset=0&limit=3450" --out newyork.json
-    domain_resources = json.load(open("newyork.json"))
+
+    resource_list = json.load(open("socrata_domains.json"))
     ins = domain.insert()
-    e.execute(ins, dict(domain="data.cityofnewyork.us", _resources=domain_resources))
+    resource_map = resource2dict(resource_list)
+    # pdb.set_trace()
+    e.execute(ins, list(resource_map.values()))
 
     ins = resource.insert()
-    e.execute(
-        ins,
-        [
-            dict(
-                resource_id=r["resource"]["id"],
-                domain=r["metadata"]["domain"],
-                name=r["resource"]["name"],
-                metadata=r["metadata"],
-                permalink=r["permalink"],
-                resource=r,
+
+    for l in resource_map.values():
+        try:
+
+            e.execute(
+                ins,
+                [
+                    dict(
+                        resource_id=r["resource"]["id"],
+                        domain=r["metadata"]["domain"],
+                        name=r["resource"]["name"],
+                        metadata=r["metadata"],
+                        permalink=r["permalink"],
+                        resource=r,
+                    )
+                    for r in json.loads(l["_resources"])["results"]
+                ],
             )
-            for r in domain_resources["results"]
-        ],
-    )
-
-    ins = resource_column.insert()
-
-    for r in domain_resources["results"]:
-        res = r["resource"]
-        if not "columns_field_name" in res:
+        except json.JSONDecodeError:
+            print("problem with %s" % (l["domain"]))
             continue
 
-        if not "id" in res:
-            print("no id in %s" % (res))
-            continue
+    # ins = resource_column.insert()
 
-        number_of_columns = len(res["columns_field_name"])
-        if number_of_columns == 0:
-            continue
+    # for r in domain_resources["results"]:
+    #     res = r["resource"]
+    #     if not "columns_field_name" in res:
+    #         continue
 
-        tuples = list(
-            [
-                tuple(z)
-                for z in zip(
-                    (res["id"],) * number_of_columns,
-                    range(1, number_of_columns + 1),
-                    res["columns_field_name"],
-                    res["columns_datatype"],
-                    res["columns_name"],
-                    res["columns_description"],
-                )
-            ]
-        )
+    #     if not "id" in res:
+    #         print("no id in %s" % (res))
+    #         continue
 
-        cols = list([c.name for c in resource_column.columns])
-        e.execute(ins, [dict(zip(cols, t)) for t in tuples])
-        # Can't seem to get the tuples to work.
-        # e.execute(ins,[tuple(z) for z in zip((res['id'],)*number_of_columns,
-        #                   range(1,number_of_columns+1),
-        #                   res['columns_field_name'],
-        #                   res['columns_datatype'],
-        #                   res['columns_name'],
-        #                   res['columns_description'])])
+    #     number_of_columns = len(res["columns_field_name"])
+    #     if number_of_columns == 0:
+    #         continue
+
+    #     tuples = list(
+    #         [
+    #             tuple(z)
+    #             for z in zip(
+    #                 (res["id"],) * number_of_columns,
+    #                 range(1, number_of_columns + 1),
+    #                 res["columns_field_name"],
+    #                 res["columns_datatype"],
+    #                 res["columns_name"],
+    #                 res["columns_description"],
+    #             )
+    #         ]
+    #     )
+
+    #     cols = list([c.name for c in resource_column.columns])
+    #     e.execute(ins, [dict(zip(cols, t)) for t in tuples])
+    #     # Can't seem to get the tuples to work.
+    #     # e.execute(ins,[tuple(z) for z in zip((res['id'],)*number_of_columns,
+    #     #                   range(1,number_of_columns+1),
+    #     #                   res['columns_field_name'],
+    #     #                   res['columns_datatype'],
+    #     #                   res['columns_name'],
+    #     #                   res['columns_description'])])
 
 print("Done persisting metadata")
-with Session() as session:
-    # q = session.query(Domain).options(joinedload(Domain.resources).joinedload(Resource.columns))
-    new_m = MetaData()
-    for dom in session.query(Domain):
-        target_schema = _domain_to_schema_map.get(dom.domain, None)
-        print(dom.domain, target_schema)
-        for r in dom.resources:
-            skip_table = False
-            if len(r.columns) == 0:
-                print("resource %s has zero columns! %s" % (r.name, r.permalink))
-                continue
-            else:
-                # print("%d columns in resource %s" % (len(r.columns), r.name))
-                for c in r.columns:
-                    if len(c.field_name) >= 100:
-                        print(
-                            "Column %s in table %s too long (%d). Skipping table"
-                            % (c.field_name, r.name, len(c.field_name))
-                        )
-                        skip_table = True
-                        break
-                pass
-            # SQLite can deal with such long identifiers as appear in this metadata
-            # PostgreSQL accepts the identifiers but truncates them. This may cause duplicate column-names
-            # SQL Server 2019 has a maximum length of 128
-            if not skip_table:
-                t = r.as_sa_table(new_m, schema=target_schema)
-            # print("adding table %s %s" % (t.name, t.columns))
+# with Session() as session:
+#     # q = session.query(Domain).options(joinedload(Domain.resources).joinedload(Resource.columns))
+#     new_m = MetaData()
+#     for dom in session.query(Domain):
+#         target_schema = _domain_to_schema_map.get(dom.domain, None)
+#         print(dom.domain, target_schema)
+#         for r in dom.resources:
+#             skip_table = False
+#             if len(r.columns) == 0:
+#                 print("resource %s has zero columns! %s" % (r.name, r.permalink))
+#                 continue
+#             else:
+#                 # print("%d columns in resource %s" % (len(r.columns), r.name))
+#                 for c in r.columns:
+#                     if len(c.field_name) >= 100:
+#                         print(
+#                             "Column %s in table %s too long (%d). Skipping table"
+#                             % (c.field_name, r.name, len(c.field_name))
+#                         )
+#                         skip_table = True
+#                         break
+#                 pass
+#             # SQLite can deal with such long identifiers as appear in this metadata
+#             # PostgreSQL accepts the identifiers but truncates them. This may cause duplicate column-names
+#             # SQL Server 2019 has a maximum length of 128
+#             if not skip_table:
+#                 t = r.as_sa_table(new_m, schema=target_schema)
+#             # print("adding table %s %s" % (t.name, t.columns))
 
-    # Posgresql can run out of memory if we try and drop a whole bunch of tables
-    # at once within the same transaction
-    print("dropping resource tables")
-    for tn in new_m.tables:
-        tab = new_m.tables.get(tn)
-        tab.drop(bind=session.bind, checkfirst=True)
+#     # Posgresql can run out of memory if we try and drop a whole bunch of tables
+#     # at once within the same transaction
+#     print("dropping resource tables")
+#     for tn in new_m.tables:
+#         tab = new_m.tables.get(tn)
+#         tab.drop(bind=session.bind, checkfirst=True)
 
-    print("Creating resource tables")
-    new_m.create_all(bind=session.bind)
+#     print("Creating resource tables")
+#     new_m.create_all(bind=session.bind)
 
 
 # Copy the 'main' database from our application that contains
 # all the newly created tables to a file-based database
 # xref https://stackoverflow.com/a/67162137/40387
-# engine_backup_file = create_engine(
-#     "sqlite:////home/phrrngtn/nyc_backup.db3", module=pysqlite3
-# )
-# raw_connection_backup_file = engine_backup_file.raw_connection()
+engine_backup_file = create_engine(
+    "sqlite:////home/phrrngtn/socrata_backup.db3", module=pysqlite3
+)
+raw_connection_backup_file = engine_backup_file.raw_connection()
 
-# raw_connection_socrata_resource = session.bind.raw_connection()
+raw_connection_socrata_resource = e.raw_connection()
 
-# print("Backing up resource tables to disk")
-# raw_connection_socrata_resource.backup(
-#     raw_connection_backup_file.connection, name="main"
-# )
-# print("done")
+print("Backing up resource tables to disk")
+raw_connection_socrata_resource.backup(
+    raw_connection_backup_file.connection, name="socrata"
+)
+print("done")

@@ -1,3 +1,6 @@
+
+import sys
+
 import sqlalchemy
 from sqlalchemy import create_engine, MetaData
 
@@ -17,7 +20,10 @@ raw_connection_memory = engine_memory.raw_connection()
 
 # Temporarily emable extension
 raw_connection_memory.enable_load_extension(True)
-raw_connection_memory.load_extension("/home/phrrngtn/bin/vsv")
+if sys.platform=='win32':
+    raw_connection_memory.load_extension("C:/tools/vsv")
+else:
+    raw_connection_memory.load_extension("/home/phrrngtn/bin/vsv")
 raw_connection_memory.enable_load_extension(False)
 
 r = engine_memory.execute("select sqlite_version()").fetchall()
@@ -39,7 +45,10 @@ print(r)
 # Although SQLite does not support 'schemas', per se, you can emulate them
 # via ATTACH DATABASE. Here, I am taking the database whose schema I generated
 # from the Socrata metadata API and attaching it as 'nyc'
-engine_memory.execute("ATTACH DATABASE '/home/phrrngtn/nyc_backup.db3' as nyc")
+if sys.platform == 'win32':
+    engine_memory.execute("ATTACH DATABASE 'C:/data/Socrata/nyc_backup.db3' as nyc")
+else:
+    engine_memory.execute("ATTACH DATABASE '/home/phrrngtn/nyc_backup.db3' as nyc")
 m = MetaData(bind=engine_memory, schema="nyc")
 # This is not as high-performance as a custom, set-oriented query against sqlite_schema would be
 # but it has the advantage of being documented and supported. The reflection takes about 8 seconds on
