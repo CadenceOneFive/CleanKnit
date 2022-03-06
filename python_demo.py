@@ -1,6 +1,23 @@
+import logging
+import structlog
+from structlog import get_logger
+
+# https://stackoverflow.com/a/66537038
+structlog.configure(
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+)
+log = get_logger()
+
 import sqlalchemy
-from sqlalchemy import MetaData, Table, Column, sql, ForeignKey
-from sqlalchemy.engine import URL
+from sqlalchemy import (
+    MetaData,
+    Table,
+    Column,
+    sql,
+    ForeignKey,
+    event,
+)
+from sqlalchemy.engine import URL, Engine
 from sqlalchemy.orm import (
     registry,
     relationship,
@@ -11,6 +28,15 @@ from sqlalchemy.orm import (
     joinedload,
 )
 
+
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    log.info("hello from set_sqlite_pragma", connection_record=connection_record)
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 import pdb
 from itertools import chain
 
@@ -19,6 +45,7 @@ import pysqlite3
 from sqlalchemy.types import String, Text, Integer, JSON, Date, DateTime, Float
 from sqlalchemy import create_engine
 import json
+
 
 m = MetaData(schema="socrata")
 mapper_registry = registry()
@@ -147,7 +174,6 @@ def resource2dict(resources):
     assumes appropriately named json files are in the current directory"""
     d = {}
     for r in resource_list["results"]:
-        print(r)
         if r["count"] == 0:
             continue
         try:
@@ -170,96 +196,113 @@ def resource2dict(resources):
 
 Session = sessionmaker(bind=e)
 
-if True:
-    e.echo = True
-    m.drop_all(bind=e)
-    m.create_all(bind=e)
-    e.echo = False
+S = Session()
+S.bind.echo = True
+m.drop_all(bind=S.bind)
+m.create_all(bind=S.bind)
+S.bind.echo = False
 
-    # TODO: show how to retrieve the domains programatically and also the resources
-    # within each domain programatically.
+# TODO: show how to retrieve the domains programatically and also the resources
+# within each domain programatically.
 
-    # how to get the domains and the resource counts.
-    # xref: https://socratadiscovery.docs.apiary.io/#reference/0/count-by-domain/count-by-domain
-    # GET http://api.us.socrata.com/api/catalog/v1/domains
-    # curl --include 'http://api.us.socrata.com/api/catalog/v1/domains'
+# how to get the domains and the resource counts.
+# xref: https://socratadiscovery.docs.apiary.io/#reference/0/count-by-domain/count-by-domain
+# GET http://api.us.socrata.com/api/catalog/v1/domains
+# curl --include 'http://api.us.socrata.com/api/catalog/v1/domains'
 
-    # resources within a domain. I got the 4350 from resultSetSize
-    # see https://socratadiscovery.docs.apiary.io/#reference/0/find-by-domain
-    #    Field	Description
-    # results	an array of result objects
-    # resultSetSize	the total number of results that could be returned were they not paged
-    # curl "https://api.us.socrata.com/api/catalog/v1?domains=data.cityofnewyork.us&offset=0&limit=3450" --out newyork.json
+# resources within a domain. I got the 4350 from resultSetSize
+# see https://socratadiscovery.docs.apiary.io/#reference/0/find-by-domain
+#    Field	Description
+# results	an array of result objects
+# resultSetSize	the total number of results that could be returned were they not paged
+# curl "https://api.us.socrata.com/api/catalog/v1?domains=data.cityofnewyork.us&offset=0&limit=3450" --out newyork.json
 
-    resource_list = json.load(open("socrata_domains.json"))
-    ins = domain.insert()
-    resource_map = resource2dict(resource_list)
-    # pdb.set_trace()
-    e.execute(ins, list(resource_map.values()))
+resource_list = json.load(open("socrata_domains.json"))
+resource_map = resource2dict(resource_list)
+ins = domain.insert()
+with S.begin():
+    S.execute(ins, list(resource_map.values()))
+log.info("Done persisting domains")
 
-    ins = resource.insert()
-
-    for l in resource_map.values():
-        try:
-
-            e.execute(
-                ins,
-                [
-                    dict(
-                        resource_id=r["resource"]["id"],
-                        domain=r["metadata"]["domain"],
-                        name=r["resource"]["name"],
-                        metadata=r["metadata"],
-                        permalink=r["permalink"],
-                        resource=r,
-                    )
-                    for r in json.loads(l["_resources"])["results"]
-                ],
+# This might take up a fair bit of memory
+all_resources = []
+for l in resource_map.values():
+    try:
+        for r in json.loads(l["_resources"])["results"]:
+            all_resources.append(
+                dict(
+                    resource_id=r["resource"]["id"],
+                    domain=r["metadata"]["domain"],
+                    name=r["resource"]["name"],
+                    metadata=r["metadata"],
+                    permalink=r["permalink"],
+                    resource=r,
+                )
             )
-        except json.JSONDecodeError:
-            print("problem with %s" % (l["domain"]))
-            continue
+    except json.JSONDecodeError:
+        log.error("problem decoding JSON", domain=l["domain"])
+        continue
 
-    # ins = resource_column.insert()
+all_resource_columns = []
 
-    # for r in domain_resources["results"]:
-    #     res = r["resource"]
-    #     if not "columns_field_name" in res:
-    #         continue
+ins = resource.insert()
+with S.begin():
+    S.execute(ins, all_resources)
+log.info("Done persisting resources")
 
-    #     if not "id" in res:
-    #         print("no id in %s" % (res))
-    #         continue
+rc_cols = list([c.name for c in resource_column.columns])
+for r in all_resources:
+    if not "resource_id" in r:
+        log.debug("no resource_id", **r)
+        continue
+    resource_id = r["resource_id"]
+    if not "metadata" in r:
+        log.debug("no metadata", **r)
+        continue
 
-    #     number_of_columns = len(res["columns_field_name"])
-    #     if number_of_columns == 0:
-    #         continue
+    res = r["resource"]["resource"]
+    if not "columns_field_name" in res:
+        log.debug(
+            "no columns_field_name",
+            domain=r["metadata"]["domain"],
+            resource_id=resource_id,
+            name=res["name"],
+        )
+        continue
 
-    #     tuples = list(
-    #         [
-    #             tuple(z)
-    #             for z in zip(
-    #                 (res["id"],) * number_of_columns,
-    #                 range(1, number_of_columns + 1),
-    #                 res["columns_field_name"],
-    #                 res["columns_datatype"],
-    #                 res["columns_name"],
-    #                 res["columns_description"],
-    #             )
-    #         ]
-    #     )
+    number_of_columns = len(res["columns_field_name"])
+    if number_of_columns == 0:
+        log.debug(
+            "zero columns",
+            domain=r["metadata"]["domain"],
+            resource_id=resource_id,
+            name=res["name"],
+        )
+        continue
 
-    #     cols = list([c.name for c in resource_column.columns])
-    #     e.execute(ins, [dict(zip(cols, t)) for t in tuples])
-    #     # Can't seem to get the tuples to work.
-    #     # e.execute(ins,[tuple(z) for z in zip((res['id'],)*number_of_columns,
-    #     #                   range(1,number_of_columns+1),
-    #     #                   res['columns_field_name'],
-    #     #                   res['columns_datatype'],
-    #     #                   res['columns_name'],
-    #     #                   res['columns_description'])])
+    tuples = list(
+        [
+            tuple(z)
+            for z in zip(
+                (res["id"],) * number_of_columns,
+                range(1, number_of_columns + 1),
+                res["columns_field_name"],
+                res["columns_datatype"],
+                res["columns_name"],
+                res["columns_description"],
+            )
+        ]
+    )
+    for rc in [dict(zip(rc_cols, t)) for t in tuples]:
+        all_resource_columns.append(rc)
 
-print("Done persisting metadata")
+log.info("Done preparing resource-columns")
+
+with S.begin():
+    S.execute(resource_column.insert(), all_resource_columns)
+
+log.info("Done persisting resource-columns")
+log.info("Done persisting metadata")
 # with Session() as session:
 #     # q = session.query(Domain).options(joinedload(Domain.resources).joinedload(Resource.columns))
 #     new_m = MetaData()
@@ -307,11 +350,10 @@ engine_backup_file = create_engine(
     "sqlite:////home/phrrngtn/socrata_backup.db3", module=pysqlite3
 )
 raw_connection_backup_file = engine_backup_file.raw_connection()
+raw_connection_socrata_resource = S.bind.raw_connection()
 
-raw_connection_socrata_resource = e.raw_connection()
-
-print("Backing up resource tables to disk")
+log.info("Backing up resource tables to disk")
 raw_connection_socrata_resource.backup(
     raw_connection_backup_file.connection, name="socrata"
 )
-print("done")
+log.info("done")
