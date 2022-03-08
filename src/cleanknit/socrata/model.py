@@ -29,12 +29,6 @@ from sqlalchemy.orm import (
 )
 
 
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    log.info("hello from set_sqlite_pragma", connection_record=connection_record)
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
 
 
 import pdb
@@ -46,8 +40,14 @@ from sqlalchemy.types import String, Text, Integer, JSON, Date, DateTime, Float
 from sqlalchemy import create_engine
 import json
 
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    log.info("hello from set_sqlite_pragma", connection_record=connection_record)
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
-m = MetaData(schema="socrata")
+_socrata_sqlalchemy_metadata = MetaData(schema="socrata")
 mapper_registry = registry()
 
 
@@ -56,13 +56,13 @@ SocrataDomain = String(512)
 
 domain = Table(
     "domain",
-    m,
+    _socrata_sqlalchemy_metadata,
     Column("domain", SocrataDomain, primary_key=True),
     Column("_resources", JSON, nullable=False),
 )
 resource = Table(
     "resource",
-    m,
+    _socrata_sqlalchemy_metadata,
     Column("domain", SocrataDomain, ForeignKey(domain.c.domain)),
     Column("resource_id", String(9), primary_key=True),
     Column("name", String),
@@ -73,7 +73,7 @@ resource = Table(
 
 resource_column = Table(
     "resource_column",
-    m,
+    _socrata_sqlalchemy_metadata,
     Column(
         "resource_id", String(9), ForeignKey(resource.c.resource_id), primary_key=True
     ),
