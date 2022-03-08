@@ -4,3 +4,13 @@ requires = [
     "wheel"
 ]
 build-backend = "setuptools.build_meta"
+
+[options]
+include_package_data = True
+packages = find:
+
+
+[options.entry_points]
+console_scripts =
+    soc = socrata.cli:main
+
