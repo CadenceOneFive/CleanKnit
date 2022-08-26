@@ -1,6 +1,6 @@
 -- This is the DDL for the tables that contains the column definitions
 -- for tabular resources hosted by Socrata.
-PRAGMA foreign_keys ON;
+PRAGMA foreign_keys ti = ON;
 
 create table nums (i integer primary key);
 
