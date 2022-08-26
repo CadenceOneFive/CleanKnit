@@ -13,8 +13,6 @@
 export socrata_output_dir="/mnt/c/data/socrata"
 jq --raw-output '.results[] | select(.count > 0)| "(mkdir -p " + env.socrata_output_dir + "/" + .domain + "; cd " + env.socrata_output_dir + " ; curl \"https://api.us.socrata.com/api/catalog/v1?domains=" + .domain+"&offset=0&limit="+(.count|tostring) + "\" --output " + .domain +"/" + .domain + ".json" +" )"'
 
-
-
 # select length(readfile(d.name)),*
 # FROM lsdir('.') as d
 # where regexp_like(d.name, '[a-z0-9]+.[a-z0-9]+.json$')
