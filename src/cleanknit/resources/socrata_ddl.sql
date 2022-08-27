@@ -1,6 +1,6 @@
 -- This is the DDL for the tables that contains the column definitions
 -- for tabular resources hosted by Socrata.
-PRAGMA foreign_keys ti = ON;
+PRAGMA foreign_keys = ON;
 
 create table nums (i integer primary key);
 
@@ -39,36 +39,43 @@ FROM
 CREATE TABLE socrata_blob([path] primary key, mtime, [blob], blob_checksum);
 
 -- this is a simple table of socrata domains.
-CREATE TABLE domain(domain varchar(512) primary key);
+CREATE TABLE socrata_domain(domain varchar(512) primary key);
 
 -- we have a resource table that has metadata for each resource pluse
 -- the blob of JSON that contains the definition of the resource. 
 -- Note the foreign
-CREATE TABLE resource(
+CREATE TABLE socrata_resource_tabular(
     domain VARCHAR(512),
     resource_id VARCHAR(9) NOT NULL,
     [name] VARCHAR,
     [description] VARCHAR,
     permalink VARCHAR,
     metadata JSON,
+    classification JSON,
+    [owner] JSON,
+    [creator] JSON,
     [resource] JSON NOT NULL,
     PRIMARY KEY (resource_id),
-    FOREIGN KEY(domain) REFERENCES domain (domain)
+    FOREIGN KEY(domain) REFERENCES socrata_domain (domain)
 );
 
 -- see https://www.sqlite.org/fts5.html for general background on FTS
 -- we want to have a very high performance index that is suitable for use within interactive
 -- environments like Excel.
-CREATE VIRTUAL TABLE resource_fts USING fts5([name], [description], content = resource);
+CREATE VIRTUAL TABLE socrata_resource_tabular_fts USING fts5(
+    [name],
+    [description],
+    content = socrata_resource_tabular
+);
 
 -- this is some boilerplate adapted from https://kimsereylam.com/sqlite/2020/03/06/full-text-search-with-sqlite.html
 -- for auto-maintaining the full-text indexes in the face of data modification (DML) on the tables.
 CREATE TRIGGER resource_ai
 AFTER
 INSERT
-    ON resource BEGIN
+    ON socrata_resource_tabular BEGIN
 INSERT INTO
-    resource_fts (rowid, [name], [description])
+    socrata_resource_tabular_fts (rowid, [name], [description])
 VALUES
     (new.rowid, new.[name], new.[description]);
 
@@ -76,9 +83,14 @@ END;
 
 CREATE TRIGGER resource_ad
 AFTER
-    DELETE ON resource BEGIN
+    DELETE ON socrata_resource_tabular BEGIN
 INSERT INTO
-    resource_fts (resource_fts, rowid, [name], [description])
+    socrata_resource_tabular_fts (
+        socrata_resource_tabular_fts,
+        rowid,
+        [name],
+        [description]
+    )
 VALUES
     (
         'delete',
@@ -92,9 +104,14 @@ END;
 CREATE TRIGGER resource_au
 AFTER
 UPDATE
-    ON resource BEGIN
+    ON socrata_resource_tabular BEGIN
 INSERT INTO
-    resource_fts (resource_fts, rowid, [name], [description])
+    socrata_resource_tabular_fts (
+        socrata_resource_tabular_fts,
+        rowid,
+        [name],
+        [description]
+    )
 VALUES
     (
         'delete',
@@ -104,13 +121,13 @@ VALUES
     );
 
 INSERT INTO
-    resource_fts (rowid, name, description)
+    socrata_resource_tabular_fts (rowid, name, description)
 VALUES
     (new.rowid, new.name, new.description);
 
 END;
 
-CREATE TABLE resource_column (
+CREATE TABLE socrata_resource_column (
     resource_id VARCHAR(9) NOT NULL,
     field_number INTEGER NOT NULL,
     field_name VARCHAR,
@@ -118,22 +135,22 @@ CREATE TABLE resource_column (
     [name] VARCHAR NOT NULL,
     [description] VARCHAR NOT NULL,
     PRIMARY KEY (resource_id, field_number),
-    FOREIGN KEY(resource_id) REFERENCES resource (resource_id)
+    FOREIGN KEY(resource_id) REFERENCES socrata_resource_tabular (resource_id)
 );
 
-CREATE VIRTUAL TABLE resource_column_fts USING fts5(
+CREATE VIRTUAL TABLE socrata_resource_column_fts USING fts5(
     field_name,
     [name],
     [description],
-    content = resource_column
+    content = socrata_resource_column
 );
 
 CREATE TRIGGER resource_column_ai
 AFTER
 INSERT
-    ON resource_column BEGIN
+    ON socrata_resource_column BEGIN
 INSERT INTO
-    resource_column_fts (rowid, field_name, [name], [description])
+    socrata_resource_column_fts (rowid, field_name, [name], [description])
 VALUES
     (
         new.rowid,
@@ -146,10 +163,10 @@ END;
 
 CREATE TRIGGER resource_column_ad
 AFTER
-    DELETE ON resource_column BEGIN
+    DELETE ON socrata_resource_column BEGIN
 INSERT INTO
-    resource_column_fts (
-        resource_column_fts,
+    socrata_resource_column_fts (
+        socrata_resource_column_fts,
         rowid,
         field_name,
         [name],
@@ -169,9 +186,9 @@ END;
 CREATE TRIGGER resource_column_au
 AFTER
 UPDATE
-    ON resource_column BEGIN
+    ON socrata_resource_column BEGIN
 INSERT INTO
-    resource_column_fts (
+    socrata_resource_column_fts (
         resource_column_fts,
         rowid,
         field_name,
@@ -188,7 +205,7 @@ VALUES
     );
 
 INSERT INTO
-    resource_column_fts (rowid, field_name, name, description)
+    socrata_resource_column_fts (rowid, field_name, name, description)
 VALUES
     (
         new.rowid,
@@ -257,41 +274,19 @@ WHERE
     socrata_blob.blob_checksum <> excluded.blob_checksum;
 
 -- populate domain .. we should make this into an UPSERT.
-WITH T AS (
+WITH T(domain) AS (
     select
-        json_extract(
-            E.value,
-            '$.metadata.domain',
-            '$.resource.id',
-            '$.resource.name',
-            '$.resource.description',
-            '$.permalink',
-            '$.link'
-        ) as row,
-        E.value -> '$.metadata' as metadata,
-        E.value -> '$.resource' as resource
+        E.value ->> '$.metadata.domain' as domain
     FROM
         socrata_blob as b,
         JSON_EACH(b.blob, '$.results') as E
-),
-_RESOURCE AS (
-    SELECT
-        T.row ->> 0 as domain,
-        T.row ->> 1 as resource_id,
-        T.row ->> 2 as [name],
-        T.row ->> 3 as [description],
-        T.row ->> 4 as permalink,
-        T.metadata as metadata,
-        T.resource as resource
-    FROM
-        T
 )
 insert into
-    domain(domain)
+    socrata_domain(domain)
 select
     distinct domain
 from
-    _RESOURCE;
+    T;
 
 -- likewise, this should be made into an UPSERT
 WITH T AS (
@@ -306,6 +301,9 @@ WITH T AS (
             '$.link'
         ) as flat_row,
         E.value -> '$.metadata' as metadata,
+        E.value -> '$.owner' as [owner],
+        E.value -> '$.creator' as [creator],
+        E.value -> '$.classification' as classification,
         E.value -> '$.resource' as [resource]
     FROM
         socrata_blob as b,
@@ -319,19 +317,25 @@ _RESOURCE AS (
         T.flat_row ->> 3 as [description],
         T.flat_row ->> 4 as permalink,
         T.metadata as metadata,
+        T.owner as [owner],
+        T.creator as creator,
+        T.classification as classification,
         T.resource as [resource]
     FROM
         T
 )
 INSERT INTO
-    [resource] (
+    [socrata_resource_tabular] (
         domain,
         resource_id,
-        name,
-        description,
+        [name],
+        [description],
         permalink,
         metadata,
-        resource
+        [owner],
+        creator,
+        classification,
+        [resource]
     )
 SELECT
     domain,
@@ -340,6 +344,9 @@ SELECT
     description,
     permalink,
     metadata,
+    [owner],
+    [creator],
+    classification,
     resource
 FROM
     _RESOURCE;
@@ -355,7 +362,7 @@ WITH T AS (
         r.resource -> '$.columns_name' ->> i AS [name],
         r.resource -> '$.columns_description' ->> i AS [description]
     FROM
-        resource as r -- this contains the resource blobs as shredded from the catalog blob for a domain
+        socrata_resource_tabular as r -- this contains the resource blobs as shredded from the catalog blob for a domain
         JOIN nums ON (
             -- note the < .. nums is zero-based
             nums.i < json_array_length(r.resource, '$.columns_name')
@@ -365,7 +372,7 @@ WITH T AS (
         -- we might be able to use $.lens_view_type = 'tabular'
 )
 INSERT INTO
-    resource_column(
+    socrata_resource_column(
         resource_id,
         field_number,
         field_name,
@@ -385,7 +392,7 @@ FROM
 
 -- demo query 
 select
-    highlight(resource_column_fts, 2, '<b>', '</b>'),
+    highlight(socrata_resource_column_fts, 2, '<b>', '</b>'),
     -- note column number should be consistent
     -- with the column used for the MATCH
     r.resource_id,
@@ -396,10 +403,10 @@ select
     s.name,
     s.description
 FROM
-    resource_column_fts as s
-    LEFT OUTER JOIN resource_column AS rc ON (s.rowid = rc.rowid)
-    JOIN resource AS r ON (rc.resource_id = r.resource_id)
+    socrata_resource_column_fts as s
+    LEFT OUTER JOIN socrata_resource_column AS rc ON (s.rowid = rc.rowid)
+    JOIN socrata_resource_tabular AS r ON (rc.resource_id = r.resource_id)
 where
-    s.[description] match 'water'
+    s.[description] match 'sqft'
 limit
-    100;
+    5;
